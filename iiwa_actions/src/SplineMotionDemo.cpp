@@ -25,13 +25,15 @@
 #include <actionlib/client/simple_action_client.h>
 #include <iiwa_msgs/MoveToJointPositionAction.h>
 #include <iiwa_msgs/MoveAlongSplineAction.h>
+#include <iiwa_msgs/SetPTPJointSpeedLimits.h>
+#include <iiwa_msgs/SetPTPCartesianSpeedLimits.h>
 
 static iiwa_msgs::SplineSegment getSplineSegment (const double x, const double y, const double z, int type = iiwa_msgs::SplineSegment::SPL) {
 	iiwa_msgs::SplineSegment segment;
 	// Segment type
 	segment.type = type;
 	// Header
-	segment.point.poseStamped.header.frame_id = 'iiwa_link_0';
+	segment.point.poseStamped.header.frame_id = "iiwa_link_0";
 	// Pose
 	segment.point.poseStamped.pose.position.x = x;
 	segment.point.poseStamped.pose.position.y = y;
@@ -51,6 +53,45 @@ static iiwa_msgs::SplineSegment getSplineSegment (const double x, const double y
 int main (int argc, char **argv)
 {
 	ros::init(argc, argv, "spline_motion_demo");
+	ros::NodeHandle nh;
+
+	ROS_INFO("Setting PTP joint speed limits...");
+	ros::ServiceClient setPTPJointSpeedLimitsClient = nh.serviceClient<iiwa_msgs::SetPTPJointSpeedLimits>("/iiwa/configuration/setPTPJointLimits");
+	iiwa_msgs::SetPTPJointSpeedLimits jointSpeedLimits;
+	jointSpeedLimits.request.joint_relative_velocity = 0.2;
+	jointSpeedLimits.request.joint_relative_acceleration = 0.5;
+	if (!setPTPJointSpeedLimitsClient.call(jointSpeedLimits)) {
+		ROS_ERROR("Service call failed.");
+		return 1;
+	}
+	else if (!jointSpeedLimits.response.success) {
+		ROS_ERROR_STREAM("Service call returned error: "+jointSpeedLimits.response.error);
+		return 1;
+	}
+	else {
+		ROS_INFO("Done.");
+	}
+
+	ROS_INFO("Setting PTP Cartesian speed limits...");
+	ros::ServiceClient setPTPCartesianSpeedLimitsClient = nh.serviceClient<iiwa_msgs::SetPTPCartesianSpeedLimits>("/iiwa/configuration/setPTPCartesianLimits");
+	iiwa_msgs::SetPTPCartesianSpeedLimits cartesianSpeedLimits;
+	cartesianSpeedLimits.request.maxCartesianVelocity = 0.5;
+	cartesianSpeedLimits.request.maxCartesianAcceleration = 0.5;
+	cartesianSpeedLimits.request.maxCartesianJerk = -1.0; // ignore
+	cartesianSpeedLimits.request.maxOrientationVelocity = 0.5;
+	cartesianSpeedLimits.request.maxOrientationAcceleration = 0.5;
+	cartesianSpeedLimits.request.maxOrientationJerk = -1.0; // ignore
+	if (!setPTPCartesianSpeedLimitsClient.call(cartesianSpeedLimits)) {
+		ROS_ERROR("Failed.");
+		return 1;
+	}
+	else if (!cartesianSpeedLimits.response.success) {
+		ROS_ERROR_STREAM("Service call returned error: "+cartesianSpeedLimits.response.error);
+		return 1;
+	}
+	else {
+		ROS_INFO("Done.");
+	}
 
 	// create the action client
 	// true causes the client to spin its own thread
@@ -76,12 +117,16 @@ int main (int argc, char **argv)
 	jointPositionClient.sendGoal(jointPositionGoal);
 
 	//wait for the action to return
-	/*bool finished_before_timeout = jointPositionClient.waitForResult(ros::Duration(60.0));
+	bool finished_before_timeout = jointPositionClient.waitForResult(ros::Duration(60.0));
 
 	if (!finished_before_timeout) {
 		ROS_WARN("iiwa motion timed out - exiting...");
 		return 0;
-	}*/
+	}
+	else if (!jointPositionClient.getResult()->success) {
+		ROS_ERROR("Action execution failed - exiting...");
+		return 0;
+	}
 
 	ROS_INFO_STREAM("Executing spline motion");
 	iiwa_msgs::MoveAlongSplineGoal splineMotion;
@@ -108,16 +153,16 @@ int main (int argc, char **argv)
 	splineMotion.spline.segments.push_back(getSplineSegment(x, y, z, iiwa_msgs::SplineSegment::SPL));
 
 	// 2. Move linear to the side
-	splineMotion.spline.segments.push_back(getSplineSegment(x-0.1, y, z, iiwa_msgs::SplineSegment::LIN));
+	splineMotion.spline.segments.push_back(getSplineSegment(x, y+0.1, z, iiwa_msgs::SplineSegment::LIN));
 
 	// 3. Move diagonally down, following a line
-	splineMotion.spline.segments.push_back(getSplineSegment(x-0.05, y, z-0.1, iiwa_msgs::SplineSegment::LIN));
+	splineMotion.spline.segments.push_back(getSplineSegment(x, y+0.05, z-0.1, iiwa_msgs::SplineSegment::LIN));
 
 	// 4. Do a bow
-	splineMotion.spline.segments.push_back(getSplineSegment(x+0.05, y, z-0.1, iiwa_msgs::SplineSegment::SPL));
+	splineMotion.spline.segments.push_back(getSplineSegment(x, y-0.05, z-0.1, iiwa_msgs::SplineSegment::SPL));
 
 	// 5. Move diagonally up
-	splineMotion.spline.segments.push_back(getSplineSegment(x-0.1, y, z, iiwa_msgs::SplineSegment::LIN));
+	splineMotion.spline.segments.push_back(getSplineSegment(x, y-0.1, z, iiwa_msgs::SplineSegment::LIN));
 
 	// 6. Do Linear motion back to start pose
 	splineMotion.spline.segments.push_back(getSplineSegment(x, y, z, iiwa_msgs::SplineSegment::LIN));
