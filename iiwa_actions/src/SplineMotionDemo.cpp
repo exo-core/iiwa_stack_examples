@@ -27,6 +27,7 @@
 #include <iiwa_msgs/MoveAlongSplineAction.h>
 #include <iiwa_msgs/SetPTPJointSpeedLimits.h>
 #include <iiwa_msgs/SetPTPCartesianSpeedLimits.h>
+#include <iiwa_msgs/SetEndpointFrame.h>
 
 static iiwa_msgs::SplineSegment getSplineSegment (const double x, const double y, const double z, int type = iiwa_msgs::SplineSegment::SPL) {
 	iiwa_msgs::SplineSegment segment;
@@ -50,11 +51,7 @@ static iiwa_msgs::SplineSegment getSplineSegment (const double x, const double y
 	return segment;
 }
 
-int main (int argc, char **argv)
-{
-	ros::init(argc, argv, "spline_motion_demo");
-	ros::NodeHandle nh;
-
+static bool setPTPJointSpeedLimits(ros::NodeHandle& nh) {
 	ROS_INFO("Setting PTP joint speed limits...");
 	ros::ServiceClient setPTPJointSpeedLimitsClient = nh.serviceClient<iiwa_msgs::SetPTPJointSpeedLimits>("/iiwa/configuration/setPTPJointLimits");
 	iiwa_msgs::SetPTPJointSpeedLimits jointSpeedLimits;
@@ -62,16 +59,18 @@ int main (int argc, char **argv)
 	jointSpeedLimits.request.joint_relative_acceleration = 0.5;
 	if (!setPTPJointSpeedLimitsClient.call(jointSpeedLimits)) {
 		ROS_ERROR("Service call failed.");
-		return 1;
+		return false;
 	}
 	else if (!jointSpeedLimits.response.success) {
 		ROS_ERROR_STREAM("Service call returned error: "+jointSpeedLimits.response.error);
-		return 1;
-	}
-	else {
-		ROS_INFO("Done.");
+		return false;
 	}
 
+	ROS_INFO("Done.");
+	return true;
+}
+
+static bool setPTPCartesianSpeedLimits(ros::NodeHandle& nh) {
 	ROS_INFO("Setting PTP Cartesian speed limits...");
 	ros::ServiceClient setPTPCartesianSpeedLimitsClient = nh.serviceClient<iiwa_msgs::SetPTPCartesianSpeedLimits>("/iiwa/configuration/setPTPCartesianLimits");
 	iiwa_msgs::SetPTPCartesianSpeedLimits cartesianSpeedLimits;
@@ -83,28 +82,68 @@ int main (int argc, char **argv)
 	cartesianSpeedLimits.request.maxOrientationJerk = -1.0; // ignore
 	if (!setPTPCartesianSpeedLimitsClient.call(cartesianSpeedLimits)) {
 		ROS_ERROR("Failed.");
-		return 1;
+		return false;
 	}
 	else if (!cartesianSpeedLimits.response.success) {
 		ROS_ERROR_STREAM("Service call returned error: "+cartesianSpeedLimits.response.error);
-		return 1;
-	}
-	else {
-		ROS_INFO("Done.");
+		return false;
 	}
 
-	// create the action client
-	// true causes the client to spin its own thread
+	ROS_INFO("Done.");
+	return true;
+}
+
+static bool setEndpointFrame(ros::NodeHandle& nh, std::string frameId = "iiwa_link_ee") {
+	ROS_INFO_STREAM("Setting endpoint frame to \""<<frameId<<"\"...");
+	ros::ServiceClient setEndpointFrameClient = nh.serviceClient<iiwa_msgs::SetEndpointFrame>("/iiwa/configuration/setEndpointFrame");
+	iiwa_msgs::SetEndpointFrame endpointFrame;
+	endpointFrame.request.frame_id = frameId;
+	if (!setEndpointFrameClient.call(endpointFrame)) {
+		ROS_ERROR("Failed.");
+		return false;
+	}
+	else if (!endpointFrame.response.success) {
+		ROS_ERROR_STREAM("Service call returned error: "+endpointFrame.response.error);
+		return false;
+	}
+
+	ROS_INFO("Done.");
+	return true;
+}
+
+
+int main (int argc, char **argv)
+{
+	ros::init(argc, argv, "spline_motion_demo");
+	ros::NodeHandle nh;
+
+	// Set speed limit for motions in joint coordinates
+	if (!setPTPJointSpeedLimits(nh)) {
+		return 1;
+	}
+
+	// Set speed limits for motions in cartesian coordinates
+	if (!setPTPCartesianSpeedLimits(nh)) {
+		return 1;
+	}
+
+	// Set endpoint frame to flange, so that our Cartesian target coordinates are tool independent
+	if (!setEndpointFrame(nh)) {
+		return 1;
+	}
+
+	// Create the action clients
+	// Passing "true" causes the clients to spin their own threads
 	actionlib::SimpleActionClient<iiwa_msgs::MoveToJointPositionAction> jointPositionClient("/iiwa/action/move_to_joint_position", true);
 	actionlib::SimpleActionClient<iiwa_msgs::MoveAlongSplineAction> splineMotionClient("/iiwa/action/move_along_spline", true);
 
-	ROS_INFO("Waiting for action servers to start.");
-	// wait for the action server to start
+	ROS_INFO("Waiting for action servers to start...");
+	// Wait for the action servers to start
 	jointPositionClient.waitForServer(); //will wait for infinite time
 	splineMotionClient.waitForServer();
 
-	ROS_INFO("Action server started, moving to start pose.");
-	// send a goal to the action
+	ROS_INFO("Action server started, moving to start pose...");
+	// Define a goal
 	iiwa_msgs::MoveToJointPositionGoal jointPositionGoal;
 	jointPositionGoal.joint_position.position.a1 =  0.00;
 	jointPositionGoal.joint_position.position.a2 =  0.19;
@@ -113,10 +152,10 @@ int main (int argc, char **argv)
 	jointPositionGoal.joint_position.position.a5 =  0.00;
 	jointPositionGoal.joint_position.position.a6 =  1.56;
 	jointPositionGoal.joint_position.position.a7 =  0.00;
-
+	// Send goal to action server
 	jointPositionClient.sendGoal(jointPositionGoal);
 
-	//wait for the action to return
+	// Wait for the action to finish
 	bool finished_before_timeout = jointPositionClient.waitForResult(ros::Duration(60.0));
 
 	if (!finished_before_timeout) {
@@ -128,10 +167,10 @@ int main (int argc, char **argv)
 		return 0;
 	}
 
-	ROS_INFO_STREAM("Executing spline motion");
+	ROS_INFO_STREAM("Executing spline motion...");
 	iiwa_msgs::MoveAlongSplineGoal splineMotion;
 
-	// Current position:
+	// Current position (manually read from /iiwa/state/CartesianPose on our iiwa 14):
 	const double x = 0.478509765292;
 	const double y = 0;
 	const double z = 0.613500561539;
